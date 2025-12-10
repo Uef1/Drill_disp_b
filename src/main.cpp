@@ -61,10 +61,14 @@ int vref;
 int targetEmf;
 int setp;
 bool firstStart = true;
-// int direction = 0;
+
 // Дополнительная переменная для контроля скорости изменения при удержании
 unsigned long holdChangeInterval = 150; // Интервал изменения в миллисекундах при удержании (150 мс)
 unsigned long lastChangeTime = 0;       // Время последнего изменения
+
+// float rampSpeed = 1000.0; // EMF единиц в секунду
+
+float rampSpeed; //
 
 #include "IntEMA.h"
 IntEMA<int> vmot;
@@ -176,7 +180,7 @@ void startMenu()
             btnDown.tick();
             int direction = 0;
 
-            // --- ИЗМЕНЕНИЕ ПАРАМЕТРА (аналог поворотам энкодера) ---
+            // --- (аналог поворотам энкодера) ---
 
             if (btnUp.click() || btnUp.hold() || btnUp.step())
                 direction = 1;
@@ -226,8 +230,31 @@ void calc()
             }
             break;
 
+            /*
+                       case State::Stabilize:
+                       setp = targetEmf;
+                       if (vemf < MIN_EMF)
+                       {
+                           state = State::Stall;
+                           setp = 0;
+                           disp.clearPrint("stop");
+                           stateTmr.start();
+                       }
+                       break;
+
+           */
+
         case State::Stabilize:
-            setp = targetEmf;
+        {
+            // ПЛАВНЫЙ ПЕРЕХОД К НОВОЙ УСТАВКЕ
+            float dt = CALC_PRD / 1000.0;   // период вызова, сек
+            float maxStep = rampSpeed * dt; // макс изменение setp
+
+            if (setp < targetEmf)
+                setp = min(setp + maxStep, targetEmf);
+            else if (setp > targetEmf)
+                setp = max(setp - maxStep, targetEmf);
+
             if (vemf < MIN_EMF)
             {
                 state = State::Stall;
@@ -235,7 +262,8 @@ void calc()
                 disp.clearPrint("stop");
                 stateTmr.start();
             }
-            break;
+        }
+        break;
 
         case State::Stall:
             if (stateTmr.timeout(STALL_TOUT))
@@ -409,6 +437,16 @@ void setup()
 
     pinMode(3, OUTPUT);
     memory.begin(0, 'a');
+
+    /*
+    0.18 сек / 30 мс = 6 итераций
+    значит setp изменится примерно за 6 шагов — плавно и быстро
+    Время шага	rampSpeed (примерно)
+    100 мс	(50*data.k)/0.10
+    180 мс (оптимально)	(50*data.k)/0.18
+    300 мс	(50*data.k)/0.30
+    */
+    rampSpeed = (50 * data.k) / 0.18; // ~180 мс на шаг
 
     startMenu();
 
