@@ -1,5 +1,5 @@
 #include <Arduino.h>
-
+#include "config.h"
 /*
   При запуске:
   - Зажать кнопку - вход в меню настройки RPM. Измерить RPM, выставить энкодером, удержать кнопку для выхода
@@ -30,27 +30,35 @@
 #define SCLK_PIN 8
 #define RCLK_PIN 7
 #define DIO_PIN 6
+// управление
 
 // энкб
-// #define ENCB_A 5
-// #define ENCB_B 4
-// #define ENCB_KEY 2
-
+ #define ENCB_A 5
+ #define ENCB_B 4
+ #define ENCB_KEY 2
+// кнопки
 #define BTN_UP_PIN 5
 #define BTN_DOWN_PIN 4
 #define BTN_OK_PIN 2
 
+
 // =========================== DATA ===========================
 #include <GTimer.h>
 #include <GyverPWM.h>
-//
-#include <EncButton.h>
-// EncButton eb(ENCB_A, ENCB_B, ENCB_KEY);
 
-// Создаем объекты для кнопок
+#include <EncButton.h>
+
+// Если выбран — ЭНКОДЕР
+#ifdef CONTROL_ENCODER
+EncButton eb(ENCB_A, ENCB_B, ENCB_KEY);
+#endif
+// 
+//Если выбраны — КНОПКИ, создаем объекты для кнопок                            
+#ifdef CONTROL_BUTTONS
 Button btnOk(BTN_OK_PIN);
 Button btnUp(BTN_UP_PIN);
 Button btnDown(BTN_DOWN_PIN);
+#endif
 
 #include <GyverSegment.h>
 Disp595_4 disp(DIO_PIN, SCLK_PIN, RCLK_PIN);
@@ -67,7 +75,6 @@ unsigned long holdChangeInterval = 150; // Интервал изменения �
 unsigned long lastChangeTime = 0;       // Время последнего изменения
 
 // float rampSpeed = 1000.0; // EMF единиц в секунду
-
 float rampSpeed; //
 
 #include "IntEMA.h"
@@ -145,7 +152,101 @@ void measure()
 }
 
 ///////////////////////////////////////////////////////////////////*
+void startMenu() {
 
+#ifdef USE_ENCODER
+    // ┌──────────────────────────┐
+    // │  МЕНЮ С ЭНКОДЕРОМ        │
+    // └──────────────────────────┘
+
+    if (eb.readBtn()) {
+        disp.clearPrint("MENU");
+        disp.delay(600);
+
+        disp.clear();
+        disp.home();
+        disp.print("RPM");
+        disp.update();
+
+        while (eb.readBtn()) disp.tick();
+        eb.reset();
+
+        disp.clearPrintR(data.krpm);
+
+        pwm = PWM_START;
+
+        while (true) {
+            measure();
+            disp.tick();
+
+            if (eb.tick()) {
+                if (eb.turn()) {
+                    data.krpm += 50 * eb.dir();
+                    data.krpm = constrain(data.krpm, 50, 20000);
+                    disp.clearPrintR(data.krpm);
+                }
+                if (eb.hold()) {
+                    data.k = vemf / (float)data.krpm;
+                    memory.updateNow();
+                    break;
+                }
+            }
+        }
+    }
+
+#elif defined(USE_BUTTONS)
+    // ┌───────────────────────┐
+    // │ МЕНЮ С КНОПКАМИ       │
+    // └───────────────────────┘
+
+    btnOk.tick();
+
+    if (btnOk.read()) {
+        disp.clearPrint("MENU");
+        disp.delay(600);
+
+        disp.clear();
+        disp.home();
+        disp.print("RPM");
+        disp.update();
+
+        while (btnOk.read()) disp.tick();
+
+        disp.clearPrintR(data.krpm);
+        pwm = PWM_START;
+
+        while (true) {
+            measure();
+            disp.tick();
+            btnOk.tick();
+            btnUp.tick();
+            btnDown.tick();
+
+            int direction = 0;
+
+            if (btnUp.click() || btnUp.hold() || btnUp.step())
+                direction = 1;
+            else if (btnDown.click() || btnDown.hold() || btnDown.step())
+                direction = -1;
+
+            if (direction != 0) {
+                data.krpm += 50 * direction;
+                data.krpm = constrain(data.krpm, 50, 5000);
+                disp.clearPrintR(data.krpm);
+            }
+
+            if (btnOk.hold()) {
+                data.k = vemf / (float)data.krpm;
+                memory.updateNow();
+                break;
+            }
+        }
+    }
+
+#endif
+}
+
+/*
 void startMenu()
 { // Функция вызывается только в сетапе, при первом запуске.
 
@@ -207,6 +308,7 @@ void startMenu()
         }
     }
 }
+*/
 
 // расчёт управления
 void calc()
@@ -291,7 +393,110 @@ void calc()
 
 void encbtn()
 {
-    // Опрашиваем все кнопки
+
+ // Если выбран энкодер    
+#ifdef USE_ENCODER
+if (eb.tick()) {
+        // click
+        if (eb.click()) {
+            switch (state) {
+                case State::Kp:
+                case State::Ki:
+                    break;
+
+                case State::Stop:
+                    state = State::Startup;
+                    disp.clearPrintR(data.rpm);
+                    break;
+
+                default:
+                    state = State::Stop;
+                    pi.integral = 0;
+                    setp = 0;
+                    pwm = 0;
+                    disp.clearPrint("----");
+                    break;
+            }
+        }
+
+        auto printKp = []() {
+            disp.clear();
+            disp.home();
+            disp.print("p");
+            disp.print(data.kp, 2);
+            disp.update();
+        };
+
+        auto printKi = []() {
+            disp.clear();
+            disp.home();
+            disp.print("i");
+            disp.print(data.ki, 2);
+            disp.update();
+        };
+
+        // hold
+        if (eb.hold()) {
+            switch (state) {
+                case State::Stall:
+                case State::Startup:
+                case State::Stabilize:
+                    state = State::Kp;
+                    setp = targetEmf;
+                    printKp();
+                    break;
+
+                case State::Kp:
+                    state = State::Ki;
+                    printKi();
+                    break;
+
+                case State::Ki:
+                    state = State::Stabilize;
+                    disp.clearPrintR(data.rpm);
+                    break;
+
+                default: break;
+            }
+        }
+
+        // turn
+        if (eb.turn()) {
+            switch (state) {
+                case State::Stall:
+                case State::Startup:
+                case State::Stabilize:
+                    data.rpm += 100 * eb.dir();
+                    data.rpm = constrain(data.rpm, 100, 20000);
+                    memory.update();
+                    targetEmf = data.rpm * data.k;
+                    disp.clearPrintR(data.rpm);
+                    break;
+
+                case State::Kp:
+                    data.kp += 0.01 * eb.dir();
+                    data.kp = max(0, data.kp);
+                    memory.update();
+                    pi.Kp = data.kp;
+                    printKp();
+                    break;
+
+                case State::Ki:
+                    data.ki += 0.01 * eb.dir();
+                    data.ki = max(0, data.ki);
+                    memory.update();
+                    pi.Ki = data.ki;
+                    printKi();
+                    break;
+
+                default: break;
+            }
+        }
+    }
+
+  // Если выбраны — КНОПКИ      
+#elif defined(USE_BUTTONS)
+// Опрашиваем все кнопки
     btnOk.tick();
     btnUp.tick();
     btnDown.tick();
@@ -419,6 +624,8 @@ void encbtn()
             break;
         }
     }
+
+#endif
 }
 
 // =========================== SKETCH ===========================
@@ -447,6 +654,7 @@ void setup()
     300 мс	(50*data.k)/0.30
     */
     rampSpeed = (50 * data.k) / 0.18; // ~180 мс на шаг
+
 
     startMenu();
 
