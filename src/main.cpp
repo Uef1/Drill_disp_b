@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include "config.h"
+
 /*
   При запуске:
   - Зажать кнопку - вход в меню настройки RPM. Измерить RPM, выставить энкодером, удержать кнопку для выхода
@@ -33,27 +34,44 @@
 // управление
 
 // энкб
- #define ENCB_A 5
- #define ENCB_B 4
- #define ENCB_KEY 2
+#define ENCB_A 5
+#define ENCB_B 4
+#define ENCB_KEY 2
 // кнопки
 #define BTN_UP_PIN 5
 #define BTN_DOWN_PIN 4
 #define BTN_OK_PIN 2
 
-
 // =========================== DATA ===========================
 #include <GTimer.h>
 #include <GyverPWM.h>
-
 #include <EncButton.h>
+#include <GyverINA.h>
 
-// Если выбран — ЭНКОДЕР
+/*
+Пределы измерения напряжения шунта у INA226 = +/- 81.92 мВ
+Макс. ожидаемый ток = 3 A
+Предел падения напряжения на шунте = 80 мВ
+R шунта = 0.08 В / 3 А = 0,027 Ом
+Используем стандартный 0.022 Ом
+Imax = 0.08 В / 0.022 Ом = 3.63 А
+*/
+#include <GyverINA.h>
+INA226 ina(0x40);             // адрес датчика
+float motorCurrent = 0;       // ток двигателя
+uint32_t lastInaRead = 0;     // таймер чтения тока
+float overCurrentLimit = 0.7; // Макс. ожидаемый ток = 0.7 А
+
+// ┌──────────────────────────────────────────┐
+// │      ВАРИАНТ 1 — ЭНКОДЕР                 │
+// └──────────────────────────────────────────┘
 #ifdef CONTROL_ENCODER
 EncButton eb(ENCB_A, ENCB_B, ENCB_KEY);
 #endif
-// 
-//Если выбраны — КНОПКИ, создаем объекты для кнопок                            
+
+// ┌──────────────────────────────────────────┐
+// │      ВАРИАНТ 2 — КНОПКИ                  │
+// └──────────────────────────────────────────┘
 #ifdef CONTROL_BUTTONS
 Button btnOk(BTN_OK_PIN);
 Button btnUp(BTN_UP_PIN);
@@ -68,7 +86,7 @@ uint8_t pwm;
 int vref;
 int targetEmf;
 int setp;
-bool firstStart = true;
+bool INA_is_present = true;
 
 // Дополнительная переменная для контроля скорости изменения при удержании
 unsigned long holdChangeInterval = 150; // Интервал изменения в миллисекундах при удержании (150 мс)
@@ -151,15 +169,40 @@ void measure()
     }
 }
 
-///////////////////////////////////////////////////////////////////*
-void startMenu() {
+// ======== ДОБАВЛЕНО: ЧТЕНИЕ ТОКА И ЗАЩИТА ========
+void readCurrent()
+{
+    if (millis() - lastInaRead >= 100)
+    {
+        lastInaRead = millis();
+        motorCurrent = ina.getCurrent(); // амперы
 
-#ifdef USE_ENCODER
+        //Serial.print("Current: ");
+        //Serial.println(motorCurrent);
+
+        if (motorCurrent > overCurrentLimit)
+        {
+            Serial.println("!!! OVERCURRENT STOP !!!");
+
+            state = State::Stop;
+            pwm = 0;
+            pi.integral = 0;
+        }
+    }
+}
+// ==================================================
+
+// ======== меню настройки RPM ========
+void startMenu()
+{
+
+#ifdef CONTROL_ENCODER
     // ┌──────────────────────────┐
     // │  МЕНЮ С ЭНКОДЕРОМ        │
     // └──────────────────────────┘
 
-    if (eb.readBtn()) {
+    if (eb.readBtn())
+    {
         disp.clearPrint("MENU");
         disp.delay(600);
 
@@ -168,24 +211,29 @@ void startMenu() {
         disp.print("RPM");
         disp.update();
 
-        while (eb.readBtn()) disp.tick();
+        while (eb.readBtn())
+            disp.tick();
         eb.reset();
 
         disp.clearPrintR(data.krpm);
 
         pwm = PWM_START;
 
-        while (true) {
+        while (true)
+        {
             measure();
             disp.tick();
 
-            if (eb.tick()) {
-                if (eb.turn()) {
+            if (eb.tick())
+            {
+                if (eb.turn())
+                {
                     data.krpm += 50 * eb.dir();
                     data.krpm = constrain(data.krpm, 50, 20000);
                     disp.clearPrintR(data.krpm);
                 }
-                if (eb.hold()) {
+                if (eb.hold())
+                {
                     data.k = vemf / (float)data.krpm;
                     memory.updateNow();
                     break;
@@ -193,15 +241,17 @@ void startMenu() {
             }
         }
     }
+#endif
 
-#elif defined(USE_BUTTONS)
+#ifdef CONTROL_BUTTONS
     // ┌───────────────────────┐
     // │ МЕНЮ С КНОПКАМИ       │
     // └───────────────────────┘
 
     btnOk.tick();
 
-    if (btnOk.read()) {
+    if (btnOk.read())
+    {
         disp.clearPrint("MENU");
         disp.delay(600);
 
@@ -210,12 +260,14 @@ void startMenu() {
         disp.print("RPM");
         disp.update();
 
-        while (btnOk.read()) disp.tick();
+        while (btnOk.read())
+            disp.tick();
 
         disp.clearPrintR(data.krpm);
         pwm = PWM_START;
 
-        while (true) {
+        while (true)
+        {
             measure();
             disp.tick();
             btnOk.tick();
@@ -229,13 +281,15 @@ void startMenu() {
             else if (btnDown.click() || btnDown.hold() || btnDown.step())
                 direction = -1;
 
-            if (direction != 0) {
+            if (direction != 0)
+            {
                 data.krpm += 50 * direction;
                 data.krpm = constrain(data.krpm, 50, 5000);
                 disp.clearPrintR(data.krpm);
             }
 
-            if (btnOk.hold()) {
+            if (btnOk.hold())
+            {
                 data.k = vemf / (float)data.krpm;
                 memory.updateNow();
                 break;
@@ -387,6 +441,8 @@ void calc()
         Serial.print(pwm * 10);
         Serial.print(',');
         Serial.print(setp);
+        Serial.print(',');
+        Serial.print(motorCurrent);
         Serial.println();
     }
 }
@@ -394,32 +450,36 @@ void calc()
 void encbtn()
 {
 
- // Если выбран энкодер    
-#ifdef USE_ENCODER
-if (eb.tick()) {
+    // Если выбран энкодер
+#ifdef CONTROL_ENCODER
+    if (eb.tick())
+    {
         // click
-        if (eb.click()) {
-            switch (state) {
-                case State::Kp:
-                case State::Ki:
-                    break;
+        if (eb.click())
+        {
+            switch (state)
+            {
+            case State::Kp:
+            case State::Ki:
+                break;
 
-                case State::Stop:
-                    state = State::Startup;
-                    disp.clearPrintR(data.rpm);
-                    break;
+            case State::Stop:
+                state = State::Startup;
+                disp.clearPrintR(data.rpm);
+                break;
 
-                default:
-                    state = State::Stop;
-                    pi.integral = 0;
-                    setp = 0;
-                    pwm = 0;
-                    disp.clearPrint("----");
-                    break;
+            default:
+                state = State::Stop;
+                pi.integral = 0;
+                setp = 0;
+                pwm = 0;
+                disp.clearPrint("----");
+                break;
             }
         }
 
-        auto printKp = []() {
+        auto printKp = []()
+        {
             disp.clear();
             disp.home();
             disp.print("p");
@@ -427,7 +487,8 @@ if (eb.tick()) {
             disp.update();
         };
 
-        auto printKi = []() {
+        auto printKi = []()
+        {
             disp.clear();
             disp.home();
             disp.print("i");
@@ -436,67 +497,74 @@ if (eb.tick()) {
         };
 
         // hold
-        if (eb.hold()) {
-            switch (state) {
-                case State::Stall:
-                case State::Startup:
-                case State::Stabilize:
-                    state = State::Kp;
-                    setp = targetEmf;
-                    printKp();
-                    break;
+        if (eb.hold())
+        {
+            switch (state)
+            {
+            case State::Stall:
+            case State::Startup:
+            case State::Stabilize:
+                state = State::Kp;
+                setp = targetEmf;
+                printKp();
+                break;
 
-                case State::Kp:
-                    state = State::Ki;
-                    printKi();
-                    break;
+            case State::Kp:
+                state = State::Ki;
+                printKi();
+                break;
 
-                case State::Ki:
-                    state = State::Stabilize;
-                    disp.clearPrintR(data.rpm);
-                    break;
+            case State::Ki:
+                state = State::Stabilize;
+                disp.clearPrintR(data.rpm);
+                break;
 
-                default: break;
+            default:
+                break;
             }
         }
 
         // turn
-        if (eb.turn()) {
-            switch (state) {
-                case State::Stall:
-                case State::Startup:
-                case State::Stabilize:
-                    data.rpm += 100 * eb.dir();
-                    data.rpm = constrain(data.rpm, 100, 20000);
-                    memory.update();
-                    targetEmf = data.rpm * data.k;
-                    disp.clearPrintR(data.rpm);
-                    break;
+        if (eb.turn())
+        {
+            switch (state)
+            {
+            case State::Stall:
+            case State::Startup:
+            case State::Stabilize:
+                data.rpm += 100 * eb.dir();
+                data.rpm = constrain(data.rpm, 150, 3500);
+                memory.update();
+                targetEmf = data.rpm * data.k;
+                disp.clearPrintR(data.rpm);
+                break;
 
-                case State::Kp:
-                    data.kp += 0.01 * eb.dir();
-                    data.kp = max(0, data.kp);
-                    memory.update();
-                    pi.Kp = data.kp;
-                    printKp();
-                    break;
+            case State::Kp:
+                data.kp += 0.01 * eb.dir();
+                data.kp = max(0, data.kp);
+                memory.update();
+                pi.Kp = data.kp;
+                printKp();
+                break;
 
-                case State::Ki:
-                    data.ki += 0.01 * eb.dir();
-                    data.ki = max(0, data.ki);
-                    memory.update();
-                    pi.Ki = data.ki;
-                    printKi();
-                    break;
+            case State::Ki:
+                data.ki += 0.01 * eb.dir();
+                data.ki = max(0, data.ki);
+                memory.update();
+                pi.Ki = data.ki;
+                printKi();
+                break;
 
-                default: break;
+            default:
+                break;
             }
         }
     }
+#endif
 
-  // Если выбраны — КНОПКИ      
-#elif defined(USE_BUTTONS)
-// Опрашиваем все кнопки
+// Если выбраны — КНОПКИ
+#ifdef CONTROL_BUTTONS
+    // Опрашиваем все кнопки
     btnOk.tick();
     btnUp.tick();
     btnDown.tick();
@@ -597,7 +665,7 @@ if (eb.tick()) {
         case State::Startup:
         case State::Stabilize:
             data.rpm += 50 * direction;
-            data.rpm = constrain(data.rpm, 100, 3500);
+            data.rpm = constrain(data.rpm, 150, 3500);
 
             memory.update();
             targetEmf = data.rpm * data.k;
@@ -645,6 +713,20 @@ void setup()
     pinMode(3, OUTPUT);
     memory.begin(0, 'a');
 
+    // Проверяем наличие и инициализируем INA226
+    if (ina.begin())
+    {
+        Serial.println(F("connected!"));
+        INA_is_present = true;
+    }
+    else
+    {
+        Serial.println(F("INA226 not found!"));
+        INA_is_present = false;
+        disp.clearPrint("InEr");
+        disp.delay(500);
+    }
+
     /*
     0.18 сек / 30 мс = 6 итераций
     значит setp изменится примерно за 6 шагов — плавно и быстро
@@ -654,7 +736,6 @@ void setup()
     300 мс	(50*data.k)/0.30
     */
     rampSpeed = (50 * data.k) / 0.18; // ~180 мс на шаг
-
 
     startMenu();
 
@@ -673,6 +754,12 @@ void loop()
     encbtn();
     measure();
     calc();
+
+    if (INA_is_present)
+    {
+        readCurrent(); // добавлено
+    }
+
     disp.tick();
     memory.tick();
 }
