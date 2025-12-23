@@ -4,6 +4,7 @@
 
 Оригинальный проект:  
 https://github.com/AlexGyver/DrillPID
+https://alexgyver.ru/drill-pid/
 
 Данный репозиторий содержит доработки и расширения функциональности оригинального кода.
 
