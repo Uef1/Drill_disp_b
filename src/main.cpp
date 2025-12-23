@@ -54,13 +54,15 @@
 Предел падения напряжения на шунте = 80 мВ
 R шунта = 0.08 В / 3 А = 0,027 Ом
 Используем стандартный 0.022 Ом
-Imax = 0.08 В / 0.022 Ом = 3.63 А
+Imax = 0.082 В / 0.022 Ом = 3.72 А
 */
 #include <GyverINA.h>
-INA226 ina(0x40);             // адрес датчика
+
+INA226 ina(0.022f, 3.72f, 0x40);  //Шунт (0.022 Ом), макс. ожидаемый ток (3.72 А), Стандартный адрес I2C 0x40
+
 float motorCurrent = 0;       // ток двигателя
 uint32_t lastInaRead = 0;     // таймер чтения тока
-float overCurrentLimit = 0.7; // Макс. ожидаемый ток = 0.7 А
+float overCurrentLimit = 3.0; // Макс. ожидаемый ток = 3.0 А
 
 // ┌──────────────────────────────────────────┐
 // │      ВАРИАНТ 1 — ЭНКОДЕР                 │
@@ -172,22 +174,30 @@ void measure()
 // ======== ДОБАВЛЕНО: ЧТЕНИЕ ТОКА И ЗАЩИТА ========
 void readCurrent()
 {
+    // Проверяем, прошло ли достаточно времени (100 мс) с момента последнего чтения
     if (millis() - lastInaRead >= 100)
     {
-        lastInaRead = millis();
-        motorCurrent = ina.getCurrent(); // амперы
+        lastInaRead = millis(); // Сбрасываем таймер последнего чтения на текущее время
+        motorCurrent = ina.getCurrent(); // Считываем текущее значение тока с датчика INA (в амперах)
+        //motorCurrent *= 10;
+        // Закомментированный код для вывода тока в последовательный порт:
+        // Serial.print("Current: ");
+        // Serial.println(motorCurrent);
 
-        //Serial.print("Current: ");
-        //Serial.println(motorCurrent);
-
-        if (motorCurrent > overCurrentLimit)
+        // Проверяем, превышает ли измеренный ток установленный предел
+        /*     if (motorCurrent > overCurrentLimit)
         {
+            // Если да, выводим сообщение об ошибке в последовательный порт
             Serial.println("!!! OVERCURRENT STOP !!!");
 
+            // Переводим систему в состояние остановки
             state = State::Stop;
+            // Устанавливаем ШИМ (широтно-импульсную модуляцию) в ноль, чтобы остановить двигатель
             pwm = 0;
-            pi.integral = 0;
+            // Сбрасываем интегральную составляющую ПИ-регулятора (если используется)
+            // pi.integral = 0;
         }
+        */
     }
 }
 // ==================================================
@@ -411,12 +421,25 @@ void calc()
             else if (setp > targetEmf)
                 setp = max(setp - maxStep, targetEmf);
 
-            if (vemf < MIN_EMF)
+            if (INA_is_present)
             {
-                state = State::Stall;
-                setp = 0;
-                disp.clearPrint("stop");
-                stateTmr.start();
+                if (motorCurrent > overCurrentLimit)
+                {
+                    state = State::Stall;
+                    setp = 0;
+                    disp.clearPrint("st_I");
+                    stateTmr.start();
+                }
+            }
+            else
+            {
+                if (vemf < MIN_EMF)
+                {
+                    state = State::Stall;
+                    setp = 0;
+                    disp.clearPrint("st_V");
+                    stateTmr.start();
+                }
             }
         }
         break;
@@ -727,6 +750,11 @@ void setup()
         disp.delay(500);
     }
 
+  Serial.print(F("Calibration value: ")); Serial.println(ina.getCalibration());
+ 
+    // Корректировка калибровочного значения (при необходимости)
+   ina.adjCalibration(-100); // Уменьшить калибровочное значение на 50 (пример)
+    
     /*
     0.18 сек / 30 мс = 6 итераций
     значит setp изменится примерно за 6 шагов — плавно и быстро
