@@ -1,7 +1,6 @@
 #include <Arduino.h>
 #include "config.h"
 
-
 /*
   При запуске:
   - Зажать кнопку - вход в меню настройки RPM. Измерить RPM, выставить энкодером, удержать кнопку для выхода
@@ -557,7 +556,7 @@ void encbtn()
             case State::Startup:
             case State::Stabilize:
                 data.rpm += 100 * eb.dir();
-                data.rpm = constrain(data.rpm, 150, 3500);
+                data.rpm = constrain(data.rpm, 200, 3500);
                 memory.update();
                 targetEmf = data.rpm * data.k;
                 disp.clearPrintR(data.rpm);
@@ -689,7 +688,7 @@ void encbtn()
         case State::Startup:
         case State::Stabilize:
             data.rpm += 50 * direction;
-            data.rpm = constrain(data.rpm, 150, 3500);
+            data.rpm = constrain(data.rpm, 200, 3500);
 
             memory.update();
             targetEmf = data.rpm * data.k;
